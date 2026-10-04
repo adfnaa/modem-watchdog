@@ -1,0 +1,86 @@
+# ============================================================
+#  Modem Watchdog — 光猫掉线检测与自动重启
+# ============================================================
+services:
+  modem-watchdog:
+    image: "busybox:stable"
+    container_name: "modem-watchdog"
+
+    # ---- 环境变量 ----
+    environment:
+      # ↓↓↓ 必改两项 ↓↓↓
+      DEVICE_IP: "192.168.0.88"  # 智能插板的局域网地址（必须是 IPv4）
+      DEVICE_TOKEN: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"  # miIO 设备令牌（32 位十六进制）
+      # ↑↑↑ 必改两项 ↑↑↑
+
+      PUID: "1000"  # 运行用户 UID（必须与 PGID 同时设置；两者都为 0 才表示不降权）
+      PGID: "1001"  # 运行用户 GID
+      TZ: "Asia/Shanghai"  # 时区（时区库已内嵌，无需装 tzdata）
+
+      # 访问密码；不设置则首次启动随机生成并打印到 docker logs（用户名固定 admin）
+      # 显式设置后优先级最高：Web 上改密码会被它覆盖
+      # WEB_PASSWORD: "你的密码"
+
+      # ---- 以下均为可选，默认值见 README ----
+      # SIID: 2                        # 插板电源属性号（1-9999；常见插座为 2）
+      # PIID: 1                        # 属性 ID（1-9999；常见插座为 1）
+      # MI_PORT: 54321                 # miIO 端口（1-65535）
+      # PING_IP1: 223.5.5.5            # 首选 ping 目标（必须是公网 IPv4，不能是域名/IPv6/插板自身）
+      # PING_IP2: 8.8.8.8              # 备用 ping 目标（第一个不通时才测，短路逻辑）
+      # PING_INTERVAL: 15s             # 检测间隔（5s-1h）；时长支持 15s / 10m / 600 三种写法
+      # PING_TIMEOUT: 1s               # 单次 ping 超时（500ms-10s）
+      # OFFLINE_THRESHOLD: 10m         # 连续断网多久后触发重启（30s-24h；需连续 2 次失败才起计时）
+      # REBOOT_COOLDOWN: 2m            # 重启后的冷却时间，期间不检测（10s-1h）
+      # REBOOT_OFF_TIME: 10s           # 插板断电时长（5s-2m）
+      # MIIO_RETRY_INTERVAL: 1m        # miIO 握手失败后的重试间隔（5s-1h）
+      # ONLINE_STABLE: 5m              # 连续在线多久才清零重启计数/熔断（30s-24h）；别调太小
+      # MAX_REBOOT_ATTEMPTS: 5         # 熔断阈值（1-10）；含"命令未获设备确认"的失败动作
+      # LOG_BUFFER_SIZE: 8388608       # 内存日志环形缓冲字节数（64KiB-256MiB；只占内存、不落盘）
+      # WEB_PORT: 8848                 # 管理页面端口，需与下方 ports 的"容器端口"一致
+      # WEB_LISTEN:                    # 监听地址：容器内保持留空（=所有接口）；填 127.0.0.1 则仅容器内可访问
+      # CONFIG_FILE: /data/config.json # 持久化路径；显式留空（CONFIG_FILE=）= 关闭持久化、纯内存运行
+
+      # 容器内源二进制路径：用于"重启看门狗进程"时判断要不要让容器重新复制新版本
+      SOURCE_BINARY: "/src/modem-watchdog"
+
+    # ---- 运行身份与内核参数 ----
+    user: "1000:1001"
+    sysctls:
+      - "net.ipv4.ping_group_range=0 2147483647"  # 允许非 root 用户发送 ping
+
+    # ---- 端口映射 ----
+    ports:
+      - "8848:8848"
+
+    # ---- 数据卷 ----
+    volumes:
+      - "./modem-watchdog:/src/modem-watchdog:ro"
+      # ↓ 挂载 = 配置持久化；不挂载 = 纯内存运行（两种都是受支持的用法）。
+      #   不挂载时程序自动进入纯内存模式：不写任何文件，改动只在内存生效，
+      #   访问密码每次启动重新随机生成 —— 建议同时设置 WEB_PASSWORD 固定密码。
+      #   （也可显式关闭：把环境变量设为 CONFIG_FILE=）
+      # 首次部署请先执行：  mkdir -p data && sudo chown 1000:1001 data
+      #   否则 Docker 自动创建的目录属主是 root，容器内 uid 1000 写不进去，
+      #   程序会静默降级为纯内存模式（日志里会说明）。
+      # - "./data:/data"
+
+    # ---- 启动入口 ----
+    entrypoint:
+      - "/bin/sh"
+      - "-c"
+      - "cp /src/modem-watchdog /tmp/modem-watchdog && chmod 755 /tmp/modem-watchdog && exec /tmp/modem-watchdog"
+
+    # ---- 网络 ----
+    network_mode: "bridge"
+
+    # ---- 启动策略与资源限制 ----
+    restart: "unless-stopped"
+    mem_limit: "512m"
+    cpu_shares: 256
+
+    # ---- 日志轮转 ----
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "8m"
+        max-file: "2"
